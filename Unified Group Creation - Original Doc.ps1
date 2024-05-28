@@ -1,4 +1,4 @@
-﻿<#
+<#
 This script is designed to take the csv export of the informer report "O365 Unified groups for Course-Sections" (created by Warren).  It should then:
  - generate Unified Groups based on these cross-linked section IDs
  - Create Teams directly linked to these unified groups
@@ -11,6 +11,65 @@ It is astronomically faster to blind remove or add students to groups, ignoring 
 
 I'd like to be able to create these teams as class teams instead of generic collaboration teams, but am unsure how to do that utilizing the groupID as provided by the new-unifiedgroup
 #>
+
+#Microsoft Graph Imports
+Import-Module Microsoft.Graph.Authentication
+Import-Module Microsoft.Graph.Users
+Import-Module Microsoft.Graph.Files
+
+$scopes = @("User.Read.All", "Files.read.All")  #Microsoft 365 Permissions 
+
+Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
+
+#-----Declarations for Accessing Sharepoint--------#
+#$hostname = "nlc3.sharepoint.com"
+#$sitePath = "/sites/it-ops-infra"
+
+#To get the site ID, you type in the search bar, "siteURL + /_api/
+#So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/
+#press enter to search, and a file should download.  Within the file, search for <d:Id m:type=”Edm.Guid”> 
+#Then, you will find the GUID, which is a long Id number....
+#
+$siteId = "098fefe0-1133-449e-82df-24013c732708"
+$driveiD = (Get-MgSiteDrive -SiteId $siteId).Id    #Id of the sharepoint site drive. 
+$rootFolder = Get-MgDriveRoot -DriveId $driveId    #Gets the Root folder.  Contains the targetFolderPath (next line) 
+$targetFolderPath = "Automation/PowerAutomate/Informer_TeamsGroupScript_Outputs"   #this path contains our file.
+$folderNames = $targetFolderPath -split '/'        #useful function to create array of subfolders based on provided string.
+
+$currentfolderId = $rootfolder.Id
+
+#Recursively searches for the desired file Folder using the supplied $targetFolderPath
+foreach($folderName in $folderNames){
+
+    $children = Get-MgDriveItemChild -DriveId $driveId -DriveItemId $currentFolderId
+    $folder = $children | Where-Object { $_.Name -eq $folderName -and $_.Folder }
+
+    if($folder) {
+
+        $currentFolderId = $folder.Id
+    }
+    else {
+        Write-Host "Subfolder '$folderName' not found."
+        break
+    }
+}
+
+#Gets the child files within the final subfolder of the targetFolderPath
+$children = Get-MgDriveItemChild -DriveId $driveId -DriveItemId $currentFolderId
+
+#Gets the newest file
+$file = $children | Where-Object { $_.LastModifiedDateTime } | Sort-Object LastModifiedDateTime -Descending | Select-Object -First 1
+
+#Creates a temporary file
+$tempFilePath = [System.IO.Path]::GetTempFileName() -replace '\.tmp$', '.csv'
+
+#Outputs the newest file to the temporary file path
+Get-MgDriveItemContent -DriveId $driveId -DriveItemId $file.Id -OutFile $tempFilePath | Out-Null
+
+#Gets file content to use and manipulate as desired.  It's better to do it this way, as working directly from sharepoint is cumbersome (supposedly)
+#This method allows us also to keep the original code in the Unified Group Script similar to the original.
+$fileContent = Get-Content -Path $tempFile
+
 
 # --- Generate the credentials to connect to O365 for easier script execution ---
 if ($env:username -eq "dbuczek") {
@@ -35,9 +94,14 @@ Connect-MicrosoftTeams -Credential $Cred;
 Connect-ExchangeOnline -Credential $Cred;
 
 # --- DECLARATIONS ---;
+
+#Are these necessary????
 #$CSVFilePath = "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\O365 Unified groups for Course-Sections TESTING.csv";
 #$CSVFilePath = "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\O365 Unified groups for Course-Sections.csv";
-$CSVFilePath = Get-ChildItem "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\Informer Exports" | sort LastWriteTime | select -last 1;
+#######
+
+
+$CSVFilePath = $tempFilePath;
 #Headers copied from CSV "REG_CODE","STUDENT","STATUS","FACULTY_EMAIL","DESCRIPTION"
 $CSVHeaders = 'Section','SEmail','Status','Instructor','Description';
 $SkippedCourses = Get-Content "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\Skipped Sections.txt";
@@ -151,3 +215,6 @@ write-host "The total number of skipped lines was $($skippedInstructorsCount + $
 write-host "The total number of skipped TBA lines was $skippedInstructorsCount.";
 write-host "The total number of lines skipped due to Course title was $skippedCoursesCount.";
 write-host "If any errors appeared during the script run please either screenshot the entire error message including the lines before and after and provide the screenshot to Dan."  ;
+
+#We created this temporary file, but we don't need it anymore
+Remove-Item -Path $tempFilePath
