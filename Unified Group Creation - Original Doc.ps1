@@ -12,10 +12,20 @@ It is astronomically faster to blind remove or add students to groups, ignoring 
 I'd like to be able to create these teams as class teams instead of generic collaboration teams, but am unsure how to do that utilizing the groupID as provided by the new-unifiedgroup
 #>
 
-#Microsoft Graph Imports
+#Makes sure that Downloads will occur automatically
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+
+# Check if the module is already installed
+if (-not (Get-Module -Name Microsoft.Graph -ListAvailable)) {
+    # Module not installed, so install it
+    Install-Module -Name Microsoft.Graph -Scope CurrentUser -Force
+}
+
+#Imports for Microsoft.Graph
 Import-Module Microsoft.Graph.Authentication
 Import-Module Microsoft.Graph.Users
 Import-Module Microsoft.Graph.Files
+Import-Module Microsoft.Graph.Sites
 
 $scopes = @("User.Read.All", "Files.read.All")  #Microsoft 365 Permissions 
 
@@ -68,7 +78,7 @@ Get-MgDriveItemContent -DriveId $driveId -DriveItemId $file.Id -OutFile $tempFil
 
 #Gets file content to use and manipulate as desired.  It's better to do it this way, as working directly from sharepoint is cumbersome (supposedly)
 #This method allows us also to keep the original code in the Unified Group Script similar to the original.
-$fileContent = Get-Content -Path $tempFile
+$fileContent = Get-Content -Path $tempFilePath
 
 
 # --- Generate the credentials to connect to O365 for easier script execution ---
