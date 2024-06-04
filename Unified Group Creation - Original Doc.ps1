@@ -43,7 +43,7 @@ Import-Module Microsoft.Graph.Sites
 Import-Module Microsoft.Graph.Teams
 Import-Module Microsoft.Graph.Groups
 
-$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Team.ReadBasic.All")  #Microsoft 365 Permissions 
+$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All")  #Microsoft 365 Permissions 
 
 Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
 
@@ -254,8 +254,21 @@ foreach ($Line in $List) {
     #Remove the student from the group first, in case the group doesn't exist already it won't be created
     if ($Status -eq "NotInClass") {
         
+        
+        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
+        $GroupId = $groupObject.Id
+
+        $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
+
+        # Extract the Object ID
+        $objectId = $user.Id
+
+        #Will need to add proper student as user
+        Remove-MgGroupMemberDirectoryObjectByRef -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
+
+        
         #THIS USES EXCHANGE TOO
-        Remove-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -Confirm:$false -ErrorAction SilentlyContinue;
+        #Remove-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -Confirm:$false -ErrorAction SilentlyContinue;
         continue;
     }
 
@@ -299,8 +312,19 @@ foreach ($Line in $List) {
     }
     else {
         write-host "Creating Team" $GroupName "and waiting for 10 seconds";
-        $GroupObject = Get-UnifiedGroup $GroupName -ErrorAction SilentlyContinue
-        New-Team -GroupID $GroupObject.ExternalDirectoryObjectID -ErrorAction SilentlyContinue | out-null;
+
+        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
+        $GroupId = $groupObject.Id
+        
+        $params = @{
+	        "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
+            "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
+        }
+
+        $newTeam = New-MgTeam  -BodyParameter $params   
+
+        #$GroupObject = Get-UnifiedGroup $GroupName -ErrorAction SilentlyContinue
+        #New-Team -GroupID $GroupObject.ExternalDirectoryObjectID -ErrorAction SilentlyContinue | out-null;
         $CreatedTeams += ,$GroupName;
         Start-Sleep -Seconds 10;
         $GroupObject = "";
@@ -311,8 +335,20 @@ foreach ($Line in $List) {
     if ($Status -eq "InClass") {
         #write-host "Adding" $Student "to Group" $GroupName;
         
+        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
+        $GroupId = $groupObject.Id
+
+        $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
+
+        # Extract the Object ID
+        $objectId = $user.Id
+
+        #Will need to add proper student as user
+        New-MgGroupMember -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
+
+
         #THIS LIKELY USES EXCHANGE TOO
-        Add-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -ErrorAction SilentlyContinue;
+        #Add-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -ErrorAction SilentlyContinue;
     }    
 }
 
