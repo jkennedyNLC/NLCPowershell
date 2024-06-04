@@ -12,28 +12,40 @@ It is astronomically faster to blind remove or add students to groups, ignoring 
 I'd like to be able to create these teams as class teams instead of generic collaboration teams, but am unsure how to do that utilizing the groupID as provided by the new-unifiedgroup
 #>
 
-#Makes sure that Downloads will occur automatically
-Set-PSRepository -Name PSGallery -InstallationPolicy Trusted
+#Helps avoid Script Running issues
+Set-ExecutionPolicy RemoteSigned -Scope CurrentUser;   #If this scripeed is resaved on this PC, will run without issue.
+Set-PSRepository -Name PSGallery -InstallationPolicy Trusted #Avoids Asking permission to download files from PSGallery
 
-# Check if the module is already installed
+# Check if the Microsoft Graph module is already installed
 if (-not (Get-Module -Name Microsoft.Graph -ListAvailable)) {
     # Module not installed, so install it
     Install-Module -Name Microsoft.Graph -Scope CurrentUser -Force
 }
 
-#Imports for Microsoft.Graph
+
+######### THIS MIGHT BE TEMPORARY.  NOT SURE IF THESE NEEEDS TO BE REMOVED TO USE GRAPH
+if (-not(Get-Module -Name MicrosoftTeams -ListAvailable)) {
+    Install-Module -Name MicrosoftTeams -Scope CurrentUser -Force
+} 
+
+<#########THIS MIGHT BE TEMPORARY NOT SURE IF THESE NEED TO BE REMOVED OT USE GRAPH
+if (-not(Get-Module -Name ExchangeOnlineManagement -ListAvailable)) {
+    Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force
+
+} 
+#>
+
+
 Import-Module Microsoft.Graph.Authentication
 Import-Module Microsoft.Graph.Users
 Import-Module Microsoft.Graph.Files
 Import-Module Microsoft.Graph.Sites
+Import-Module Microsoft.Graph.Teams
+Import-Module Microsoft.Graph.Groups
 
-$scopes = @("User.Read.All", "Files.read.All")  #Microsoft 365 Permissions 
+$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Team.ReadBasic.All")  #Microsoft 365 Permissions 
 
 Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
-
-#-----Declarations for Accessing Sharepoint--------#
-#$hostname = "nlc3.sharepoint.com"
-#$sitePath = "/sites/it-ops-infra"
 
 #To get the site ID, you type in the search bar, "siteURL + /_api/
 #So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/
@@ -81,6 +93,13 @@ Get-MgDriveItemContent -DriveId $driveId -DriveItemId $file.Id -OutFile $tempFil
 $fileContent = Get-Content -Path $tempFilePath
 
 
+
+
+
+
+
+
+
 # --- Generate the credentials to connect to O365 for easier script execution ---
 if ($env:username -eq "dbuczek") {
     $username = 'dbuczek@nlc.bc.ca';
@@ -92,30 +111,46 @@ else {
     $Cred = get-credential;
 }
 
+
+
+
+
+
+
+
+
+
+
+
 # --- Connect to Exchange Online Powershell and Microsoft Teams ---
-Set-ExecutionPolicy RemoteSigned -Scope CurrentUser;
+
 #$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $Cred -Authentication Basic -AllowRedirection;
 #Import-PSSession $Session -ErrorAction SilentlyContinue -AllowClobber;
-Install-Module -Name ExchangeOnlineManagement -Scope AllUsers
-Import-Module ExchangeOnlineManagement;
+
+#Import-Module ExchangeOnlineManagement;
 Import-Module -Name MicrosoftTeams -ErrorAction SilentlyContinue;
 #Connect-MicrosoftTeams -AccountId $username -ErrorAction SilentlyContinue;
 Connect-MicrosoftTeams -Credential $Cred;
-Connect-ExchangeOnline -Credential $Cred;
+#Connect-ExchangeOnline -Credential $Cred;
 
 # --- DECLARATIONS ---;
-
-#Are these necessary????
-#$CSVFilePath = "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\O365 Unified groups for Course-Sections TESTING.csv";
-#$CSVFilePath = "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\O365 Unified groups for Course-Sections.csv";
-#######
 
 
 $CSVFilePath = $tempFilePath;
 #Headers copied from CSV "REG_CODE","STUDENT","STATUS","FACULTY_EMAIL","DESCRIPTION"
 $CSVHeaders = 'Section','SEmail','Status','Instructor','Description';
+
+#DC-
+
+#This Skipped Sections document will be used to check if groups already exist.  I think originally this was for if teachers dont want groups created 
+#Ed says we don't maintain a list like that anymore, so i think that makes this file pointless.  Thinking to just get rid of it.
+#(will silence errors for groups that we manually skip or that might already exist)
 $SkippedCourses = Get-Content "\\dc-casht\C$\dbuczek_working_documents\O365 Groups from D2L\Skipped Sections.txt";
-$List = Import-CSV $CSVFilePath.FullName -Header $CSVHeaders -Delimiter "," | select -skip 1;
+$List = Import-CSV $CSVFilePath -Header $CSVHeaders -Delimiter "," | select -skip 1;
+
+$CSVFilePath
+
+
 $GroupObject = "";
 $Count = 0;
 [array]$StudentGroups = @();
@@ -138,17 +173,30 @@ $message = "Would you like to refresh the internal list of Groups and Teams?`nSe
 $result = $host.ui.PromptForChoice($title, $message, $options, 1);
 switch ($result) {
     0{write-host "Collecting Groups, this will take some time... (5-10 minutes)";
-        [array]$ExistingGroups = Get-UnifiedGroup -ResultSize Unlimited | select-object DisplayName;
+        
+        # Retrieve all Microsoft 365 groups and select their display names (uses Microsoft Graph
+        $groups = Get-MgGroup -All
+        [array]$existingGroups = $groups | Select-Object -ExpandProperty DisplayName
+
+
         write-host -ForegroundColor Green "Groups Collected!  Total groups:" $ExistingGroups.count;
         write-host "Collecting Teams, this will take some time... (5-10 minutes)";
+        
         $ProgressPreference = "SilentlyContinue";
-        [array]$ExistingTeams = Get-Team | select-object DisplayName;
+
+
+        # Retrieve all Microsoft Teams and select their display name
+        $teams = Get-MgTeam
+        [array]$ExistingTeams = $teams | Select-Object -ExpandProperty DisplayName
+
         write-host -ForegroundColor Green "Teams Collected!  Total teams:" $ExistingTeams.count;
         write-host "Beginning to process the CSV file.";
         $progressPreference = "Continue";}
     1{Write-Host -foregroundcolor Red "In Test Mode, not refreshing Groups or Teams!";}
     2{Write-Host "Cancel"; break;}
 }
+
+
 
 # --- Let's process the actual CSV file now ---
 foreach ($Line in $List) {
@@ -160,6 +208,30 @@ foreach ($Line in $List) {
     $Description = $Line.Description;
     $Status = $Line.Status;
     
+    #Get unique Id for the instructor who will be the owner of the group 
+    $user = Get-MgUser -Filter "mail eq '$instructor'"
+    $userId = $user.Id
+
+    #####-----Email Unique Name Generator--------#####
+
+    #Generate a mail nickname by removing spaces and special characters
+    #This is required to create a similar default email naming convention as was used in "Exchange Online" (I.e. Not graph)
+    $mailNickname = $GroupName -replace '[^a-zA-Z0-9]', ''
+    $uniqueMailNickname = $mailNickname
+    $count = 1
+    
+    #Increments digit if name already taken
+    while (Get-MgGroup -Filter "mailNickname eq '$uniqueMailNickname'" -ErrorAction SilentlyContinue) {
+        $uniqueMailNickname = "$mailNickname$count"
+        $count++
+    }
+
+    #####-----End of Email name Generator ------######
+
+
+
+
+
     #Overhead for keeping track of what line we're on - debug
     $Count++;
     #write-host "Processing line #"$Count":"$Line;
@@ -181,6 +253,8 @@ foreach ($Line in $List) {
    
     #Remove the student from the group first, in case the group doesn't exist already it won't be created
     if ($Status -eq "NotInClass") {
+        
+        #THIS USES EXCHANGE TOO
         Remove-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -Confirm:$false -ErrorAction SilentlyContinue;
         continue;
     }
@@ -192,9 +266,29 @@ foreach ($Line in $List) {
     }
     else {
         write-host "Creating Group" $GroupName "and waiting for 10 seconds";
-        New-UnifiedGroup -DisplayName $GroupName -Owner $Instructor -Notes $Description -AccessType Private | Out-Null;
+        
+        #Settings for the group to be created.
+        $NewGroupSettings = @{ 
+            "displayName" = $GroupName #works
+            "mailEnabled" = "true" #works
+            "mailNickname"= $uniqueMailNickname #works
+            "securityEnabled" = "false" #works
+            "groupTypes" = @("Unified") #works
+            "description" = $Description #works
+            "owners@odata.bind" = @("https://graph.microsoft.com/v1.0/users/$userId")  #works
+            "resourceBehaviorOptions" = @("WelcomeEmailDisabled") #works
+            "visibility" = "Private"
+        }  
+
+        #Creates the new group using the $NewGroupSettings
+        $group = New-MgGroup -BodyParameter $NewGroupSettings 
+
+        #Gets GroupId from new group just created.
+        $groupId = $group.Id
+
         $CreatedGroups += ,$GroupName;
-        Set-UnifiedGroup -Identity $GroupName -UnifiedGroupWelcomeMessageEnabled:$false -AcceptMessagesOnlyFromSendersOrMembers $Instructor -HiddenFromAddressListsEnabled:$true -AlwaysSubscribeMembersToCalendarEvents:$TRUE -SubscriptionEnabled:$TRUE -AutoSubscribeNewMembers:$TRUE;
+
+        #WE CAN TEST TO SEE IF THIS IS NECESSARY
         Start-Sleep -Seconds 10;
     }
 
@@ -216,9 +310,13 @@ foreach ($Line in $List) {
     #It is significantly faster to re-perform this operation than it is to compare whether it needs to be done
     if ($Status -eq "InClass") {
         #write-host "Adding" $Student "to Group" $GroupName;
+        
+        #THIS LIKELY USES EXCHANGE TOO
         Add-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -ErrorAction SilentlyContinue;
     }    
 }
+
+
 
 write-host "The script has completed.";
 write-host "The total number of skipped lines was $($skippedInstructorsCount + $skippedCoursesCount).";
