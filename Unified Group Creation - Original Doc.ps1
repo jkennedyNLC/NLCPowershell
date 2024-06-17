@@ -43,9 +43,9 @@ Import-Module Microsoft.Graph.Sites
 Import-Module Microsoft.Graph.Teams
 Import-Module Microsoft.Graph.Groups
 
-$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All")  #Microsoft 365 Permissions 
+$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All, Sites.Read.All")  #Microsoft 365 Permissions 
 
-Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
+Connect-MgGraph -Scopes $scopes       #Connect to Microsoft Graph with the provided permissions
 
 #To get the site ID, you type in the search bar, "siteURL + /_api/
 #So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/
@@ -101,6 +101,8 @@ $fileContent = Get-Content -Path $tempFilePath
 
 
 # --- Generate the credentials to connect to O365 for easier script execution ---
+
+<#
 if ($env:username -eq "dbuczek") {
     $username = 'dbuczek@nlc.bc.ca';
     $SecPass = '01000000d08c9ddf0115d1118c7a00c04fc297eb0100000034d8c811f6a15245a42e601d7c5910490000000002000000000003660000c000000010000000edbace923455e776bafbfcd202e83cfd0000000004800000a000000010000000e5354d39b965cea71cbf38dc315a991318000000b183ffbf0c590a2bbcb9cbc77010ebe6d110871901e0aad114000000f5710fd8eca912a96f76b993bfb23aaa28371950';
@@ -110,7 +112,7 @@ if ($env:username -eq "dbuczek") {
 else {
     $Cred = get-credential;
 }
-
+#>
 
 
 
@@ -208,8 +210,14 @@ foreach ($Line in $List) {
     $Description = $Line.Description;
     $Status = $Line.Status;
     
+    $GroupName
+    $Student
+    $Instructor
+    $Description
+    $Status
+
     #Get unique Id for the instructor who will be the owner of the group 
-    $user = Get-MgUser -Filter "mail eq '$instructor'"
+    $user = Get-MgUser -Filter "mail eq '$Instructor'"
     $userId = $user.Id
 
     #####-----Email Unique Name Generator--------#####
@@ -295,7 +303,7 @@ foreach ($Line in $List) {
 
         #Creates the new group using the $NewGroupSettings
         $group = New-MgGroup -BodyParameter $NewGroupSettings 
-
+        write-host $groupId 
         #Gets GroupId from new group just created.
         $groupId = $group.Id
 
@@ -303,31 +311,6 @@ foreach ($Line in $List) {
 
         #WE CAN TEST TO SEE IF THIS IS NECESSARY
         Start-Sleep -Seconds 10;
-    }
-
-    #Check if the associated team exists already, create it if not
-    if (($CreatedTeams -match $GroupName) -OR ($ExistingTeams -match $GroupName)) { 
-        #write-host $GroupName "Team already exists.";
-        $CreatedTeams += ,$GroupName;
-    }
-    else {
-        write-host "Creating Team" $GroupName "and waiting for 10 seconds";
-
-        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
-        $GroupId = $groupObject.Id
-        
-        $params = @{
-	        "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
-            "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
-        }
-
-        $newTeam = New-MgTeam  -BodyParameter $params   
-
-        #$GroupObject = Get-UnifiedGroup $GroupName -ErrorAction SilentlyContinue
-        #New-Team -GroupID $GroupObject.ExternalDirectoryObjectID -ErrorAction SilentlyContinue | out-null;
-        $CreatedTeams += ,$GroupName;
-        Start-Sleep -Seconds 10;
-        $GroupObject = "";
     }
 
     #Add the student from the group as appropriate
@@ -350,6 +333,48 @@ foreach ($Line in $List) {
         #THIS LIKELY USES EXCHANGE TOO
         #Add-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -ErrorAction SilentlyContinue;
     }    
+}
+
+Start-Sleep -Seconds 20;
+
+foreach($Line in $List) {
+ 
+    $GroupName = $Line.Section; ##
+    $GroupName
+
+
+    #Get unique Id for the instructor who will be the owner of the group 
+    $user = Get-MgUser -Filter "mail eq '$Instructor'"
+    $userId = $user.Id
+
+
+ 
+ 
+    #Check if the associated team exists already, create it if not
+    if (($CreatedTeams -match $GroupName) -OR ($ExistingTeams -match $GroupName)) { 
+        #write-host $GroupName "Team already exists.";
+        $CreatedTeams += ,$GroupName;
+    }
+    else {
+        write-host "Creating Team" $GroupName "and waiting for 10 seconds";
+
+        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
+        $GroupId = $groupObject.Id
+        write-host $groupId 
+        $params = @{
+	        "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
+            "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
+        }
+        Start-Sleep -Seconds 10;
+        $newTeam = New-MgTeam  -BodyParameter $params   
+        Write-Host "OUTCOME = $newTeam"
+        #$GroupObject = Get-UnifiedGroup $GroupName -ErrorAction SilentlyContinue
+        #New-Team -GroupID $GroupObject.ExternalDirectoryObjectID -ErrorAction SilentlyContinue | out-null;
+        $CreatedTeams += ,$GroupName;
+        
+        $GroupObject = "";
+    }
+
 }
 
 
