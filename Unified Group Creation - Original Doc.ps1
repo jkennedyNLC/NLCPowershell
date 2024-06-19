@@ -12,6 +12,131 @@ It is astronomically faster to blind remove or add students to groups, ignoring 
 I'd like to be able to create these teams as class teams instead of generic collaboration teams, but am unsure how to do that utilizing the groupID as provided by the new-unifiedgroup
 #>
 
+
+#Generate a mail nickname by removing spaces and special characters
+#This is required to create a similar default email naming convention as was used in "Exchange Online" (I.e. Not graph)
+function generateUniqueName {
+    
+    param (
+        [string]$GroupName
+    )
+
+    $mailNickname = $GroupName -replace '[^a-zA-Z0-9]', ''
+    $uniqueMailNickname = $mailNickname
+    $nameCount = 1
+
+    #Increments digit if name already taken
+    while (Get-MgGroup -Filter "mailNickname eq '$uniqueMailNickname'" -ErrorAction SilentlyContinue) {
+        $uniqueMailNickname = "$mailNickname$nameCount"
+        $nameCount++
+    }
+
+    return $uniqueMailNickname;
+}
+
+function getUniqueInstructorId {
+
+    param (
+        [string]$nameOfInstructor
+    )
+
+    $user = Get-MgUser -Filter "mail eq '$nameOfInstructor'"
+    return $user.Id
+
+}
+
+#This function just fetches all the groups or teams, depending on if "group" or "team" is entered as a parameter
+#Looks complicated, but it just writes some output, gets the lists, and sends whichever list required back as an array
+function getAllGroupsOrTeams {
+
+    param(
+        [string]$groupType
+    )
+
+    write-host "Collecting"$groupType"s, this will take some time... (5-10 minutes)"
+
+    $teamsOrGroups = $null
+    [array]$existingList = @()
+
+    if($groupType -eq "group") {
+        $teamsOrGroups = Get-MgGroup -all
+    }
+    elseif($groupType -eq "team"){
+        $teamsOrGroups = Get-MgTeam -all
+    }
+
+    [array]$existingList = $teamsOrGroups | Select-Object -ExpandProperty DisplayName
+    
+    write-host -ForegroundColor Green "All"$groupType"s collected!  Total "$groupType"s: " $existingList.count;
+
+    return $existingList
+
+}
+
+function getGroupId {
+    param (
+        [string]$groupName
+    )
+
+    $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
+    return $groupObject.Id
+}
+
+function modifyStudentRecord {
+
+    param(
+        [string]$groupName,
+	    [string]$Student,
+        [string]$Action
+    )
+
+    $GroupId = getGroupId -groupName $groupName
+
+    $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
+    $objectId = $user.Id
+
+    if($Action -eq "create"){
+        #Will need to add proper student as user
+        New-MgGroupMember -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
+    }
+    elseif($Action -eq "remove"){
+        try {
+            #Will need to add proper student as user
+            Remove-MgGroupMemberDirectoryObjectByRef -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction Stop
+
+        }
+
+        catch {
+            if($_.Exception.Message -like "*does not exist or one of its queried reference-property objects are not present*"){
+                if($groupId -eq $null){
+                    Write-host "A student was failed to remove from a group, but the group doesn't exist yet." -Foreground yellow
+                    write-host "    Group ID: "$groupId -foregroundColor Yellow
+                    Write-host "    GroupName: "$GroupName -ForegroundColor yellow
+                    Write-host "    Object ID: "$objectId -ForegroundColor yellow
+                    Write-host "    StudentName: "$Student -ForegroundColor yellow
+                }else{
+                    write-host "Cannot remove student from group because student not found in group." -ForegroundColor yellow
+                    write-host "    Group ID: "$groupId -foregroundColor Yellow
+                    Write-host "    GroupName: "$GroupName -ForegroundColor yellow
+                    Write-host "    Object ID: "$objectId -ForegroundColor yellow
+                    Write-host "    StudentName: "$Student -ForegroundColor yellow
+                }
+            }
+            else {
+                Write-Host "Another Unknown error happened during removal of student." -ForegroundColor Red
+                write-host "    Group ID: "$groupId -foregroundColor Yellow
+                Write-host "    GroupName: "$GroupName -ForegroundColor yellow
+                Write-host "    Object ID: "$objectId -ForegroundColor yellow
+                Write-host "    StudentName: "$Student -ForegroundColor yellow
+            }  
+            
+        }
+    }
+
+
+}
+        
+
 #Helps avoid Script Running issues
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser;   #If this scripeed is resaved on this PC, will run without issue.
 Set-PSRepository -Name PSGallery -InstallationPolicy Trusted #Avoids Asking permission to download files from PSGallery
@@ -22,20 +147,6 @@ if (-not (Get-Module -Name Microsoft.Graph -ListAvailable)) {
     Install-Module -Name Microsoft.Graph -Scope CurrentUser -Force
 }
 
-
-######### THIS MIGHT BE TEMPORARY.  NOT SURE IF THESE NEEEDS TO BE REMOVED TO USE GRAPH
-if (-not(Get-Module -Name MicrosoftTeams -ListAvailable)) {
-    Install-Module -Name MicrosoftTeams -Scope CurrentUser -Force
-} 
-
-<#########THIS MIGHT BE TEMPORARY NOT SURE IF THESE NEED TO BE REMOVED OT USE GRAPH
-if (-not(Get-Module -Name ExchangeOnlineManagement -ListAvailable)) {
-    Install-Module -Name ExchangeOnlineManagement -Scope AllUsers -Force
-
-} 
-#>
-
-
 Import-Module Microsoft.Graph.Authentication
 Import-Module Microsoft.Graph.Users
 Import-Module Microsoft.Graph.Files
@@ -45,7 +156,7 @@ Import-Module Microsoft.Graph.Groups
 
 $scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All, Sites.Read.All")  #Microsoft 365 Permissions 
 
-Connect-MgGraph -Scopes $scopes       #Connect to Microsoft Graph with the provided permissions
+Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
 
 #To get the site ID, you type in the search bar, "siteURL + /_api/
 #So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/
@@ -93,48 +204,6 @@ Get-MgDriveItemContent -DriveId $driveId -DriveItemId $file.Id -OutFile $tempFil
 $fileContent = Get-Content -Path $tempFilePath
 
 
-
-
-
-
-
-
-
-# --- Generate the credentials to connect to O365 for easier script execution ---
-
-<#
-if ($env:username -eq "dbuczek") {
-    $username = 'dbuczek@nlc.bc.ca';
-    $SecPass = '01000000d08c9ddf0115d1118c7a00c04fc297eb0100000034d8c811f6a15245a42e601d7c5910490000000002000000000003660000c000000010000000edbace923455e776bafbfcd202e83cfd0000000004800000a000000010000000e5354d39b965cea71cbf38dc315a991318000000b183ffbf0c590a2bbcb9cbc77010ebe6d110871901e0aad114000000f5710fd8eca912a96f76b993bfb23aaa28371950';
-    $Password = ConvertTo-SecureString $SecPass;
-    $Cred = New-Object -typename System.Management.Automation.PSCredential -argumentlist $Username,$Password;
-}
-else {
-    $Cred = get-credential;
-}
-#>
-
-
-
-
-
-
-
-
-
-
-
-# --- Connect to Exchange Online Powershell and Microsoft Teams ---
-
-#$Session = New-PSSession -ConfigurationName Microsoft.Exchange -ConnectionUri https://outlook.office365.com/powershell-liveid/ -Credential $Cred -Authentication Basic -AllowRedirection;
-#Import-PSSession $Session -ErrorAction SilentlyContinue -AllowClobber;
-
-#Import-Module ExchangeOnlineManagement;
-Import-Module -Name MicrosoftTeams -ErrorAction SilentlyContinue;
-#Connect-MicrosoftTeams -AccountId $username -ErrorAction SilentlyContinue;
-Connect-MicrosoftTeams -Credential $Cred;
-#Connect-ExchangeOnline -Credential $Cred;
-
 # --- DECLARATIONS ---;
 
 
@@ -154,7 +223,6 @@ $CSVFilePath
 
 
 $GroupObject = "";
-$Count = 0;
 [array]$StudentGroups = @();
 [array]$CreatedGroups = @();
 [array]$CreatedTeams = @();
@@ -163,46 +231,19 @@ $skippedCoursesCount = 0;
 $lastcheckeddate=0;
 
 write-host "CSV File:" $CSVFilePath;
-## Prompt boxes
-$yes = New-Object System.Management.Automation.Host.ChoiceDescription "&Yes","Refresh Groups and Teams";
-$no = New-Object System.Management.Automation.Host.ChoiceDescription "&No","Do not Refresh Groups and Teams";
-$cancel = New-Object System.Management.Automation.Host.ChoiceDescription "&Cancel","Cancel this script run entirely";
-$options = [System.Management.Automation.Host.ChoiceDescription[]]($yes, $no, $cancel);
+#We created this temporary file, but we don't need it anymore
+Remove-Item -Path $tempFilePath   
 
-## Check whether internal Groups and Teams and Teams need to be refreshed
-$title = "Refresh internal Groups/Teams list?" ;
-$message = "Would you like to refresh the internal list of Groups and Teams?`nSelecting yes will require an additional 10-20 minutes at the beginning for the check.`nOnly select no if you have recently refreshed of Groups and Teams in this session.`nIf you do not understand this choice select Cancel.";
-$result = $host.ui.PromptForChoice($title, $message, $options, 1);
-switch ($result) {
-    0{write-host "Collecting Groups, this will take some time... (5-10 minutes)";
-        
-        # Retrieve all Microsoft 365 groups and select their display names (uses Microsoft Graph
-        $groups = Get-MgGroup -All
-        [array]$existingGroups = $groups | Select-Object -ExpandProperty DisplayName
+# Retrieve all Microsoft 365 groups and select their display names (uses Microsoft Graph
 
-
-        write-host -ForegroundColor Green "Groups Collected!  Total groups:" $ExistingGroups.count;
-        write-host "Collecting Teams, this will take some time... (5-10 minutes)";
-        
-        $ProgressPreference = "SilentlyContinue";
-
-
-        # Retrieve all Microsoft Teams and select their display name
-        $teams = Get-MgTeam
-        [array]$ExistingTeams = $teams | Select-Object -ExpandProperty DisplayName
-
-        write-host -ForegroundColor Green "Teams Collected!  Total teams:" $ExistingTeams.count;
-        write-host "Beginning to process the CSV file.";
-        $progressPreference = "Continue";}
-    1{Write-Host -foregroundcolor Red "In Test Mode, not refreshing Groups or Teams!";}
-    2{Write-Host "Cancel"; break;}
-}
+[array]$existingGroups = getAllGroupsOrTeams -groupType "group"
+[array]$existingTeams = getAllGroupsOrTeams -groupType "team"
 
 
 
 # --- Let's process the actual CSV file now ---
 foreach ($Line in $List) {
-    write-progress -Activity "Processing..." -CurrentOperation "Line $($list.IndexOf($line)) of $($List.Length)" -PercentComplete (($list.IndexOf($line)/$List.Length)*100);
+    
     #Some internal declarations based on the specific line we're working on
     $GroupName = $Line.Section;
     $Student = $Line.SEmail;
@@ -210,75 +251,28 @@ foreach ($Line in $List) {
     $Description = $Line.Description;
     $Status = $Line.Status;
     
-    $GroupName
-    $Student
-    $Instructor
-    $Description
-    $Status
+    #Calls Declared functoin to get unique Id for the instructor who will be the owner of the group 
+    $userId = getUniqueInstructorId -nameOfInstructor $instructor
 
-    #Get unique Id for the instructor who will be the owner of the group 
-    $user = Get-MgUser -Filter "mail eq '$Instructor'"
-    $userId = $user.Id
-
-    #####-----Email Unique Name Generator--------#####
-
-    #Generate a mail nickname by removing spaces and special characters
-    #This is required to create a similar default email naming convention as was used in "Exchange Online" (I.e. Not graph)
-    $mailNickname = $GroupName -replace '[^a-zA-Z0-9]', ''
-    $uniqueMailNickname = $mailNickname
-    $count = 1
-    
-    #Increments digit if name already taken
-    while (Get-MgGroup -Filter "mailNickname eq '$uniqueMailNickname'" -ErrorAction SilentlyContinue) {
-        $uniqueMailNickname = "$mailNickname$count"
-        $count++
-    }
-
-    #####-----End of Email name Generator ------######
-
-
-
-
-
-    #Overhead for keeping track of what line we're on - debug
-    $Count++;
-    #write-host "Processing line #"$Count":"$Line;
-    #if ($Count % 100 -eq 0) {
-        #write-host "Currently processing line" $Count;
-    #}
+    #Calls Declared Function to generate a unique name
+    $uniqueMailNickname = generateUniqueName -GroupName $GroupName
 
     #Skip lines without Instructors listed
     if ($Instructor -eq "TBA") {
         $skippedInstructorsCount++;
-        continue;
     }
 
     #catch for sections that explicitly do not want teams made
     if ($SkippedCourses -match $GroupName) {
         $skippedCoursesCount++;
-        continue;
     }
    
     #Remove the student from the group first, in case the group doesn't exist already it won't be created
     if ($Status -eq "NotInClass") {
-        
-        
-        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
-        $GroupId = $groupObject.Id
-
-        $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
-
-        # Extract the Object ID
-        $objectId = $user.Id
-
-        #Will need to add proper student as user
-        Remove-MgGroupMemberDirectoryObjectByRef -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
-
-        
-        #THIS USES EXCHANGE TOO
-        #Remove-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -Confirm:$false -ErrorAction SilentlyContinue;
-        continue;
+        modifyStudentRecord -groupName $GroupName -Student $Student -Action "remove"
     }
+
+
 
     #Check if the unified group exists already, create it if not
     if (($CreatedGroups -match $GroupName) -OR ($ExistingGroups -match $GroupName)) { 
@@ -303,10 +297,10 @@ foreach ($Line in $List) {
 
         #Creates the new group using the $NewGroupSettings
         $group = New-MgGroup -BodyParameter $NewGroupSettings 
-        write-host $groupId 
+
         #Gets GroupId from new group just created.
         $groupId = $group.Id
-
+        write-host "New Group created with name: "$groupName" and group id "$groupID 
         $CreatedGroups += ,$GroupName;
 
         #WE CAN TEST TO SEE IF THIS IS NECESSARY
@@ -316,39 +310,18 @@ foreach ($Line in $List) {
     #Add the student from the group as appropriate
     #It is significantly faster to re-perform this operation than it is to compare whether it needs to be done
     if ($Status -eq "InClass") {
-        #write-host "Adding" $Student "to Group" $GroupName;
-        
-        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
-        $GroupId = $groupObject.Id
-
-        $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
-
-        # Extract the Object ID
-        $objectId = $user.Id
-
-        #Will need to add proper student as user
-        New-MgGroupMember -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
-
-
-        #THIS LIKELY USES EXCHANGE TOO
-        #Add-UnifiedGroupLinks -Identity $GroupName -LinkType Members -Links $Student -ErrorAction SilentlyContinue;
-    }    
+        modifyStudentRecord -groupName $GroupName -Student $Student -Action "create"
+        Write-Host "Added $Student to Group: $GroupName"
+    }
 }
 
+#This sleep adds additional 20 seconds between running groups actions and teams actions.  This ensures that all group
+#actions are completed, avoiding Teams still provisioning e
 Start-Sleep -Seconds 20;
 
 foreach($Line in $List) {
  
-    $GroupName = $Line.Section; ##
-    $GroupName
-
-
-    #Get unique Id for the instructor who will be the owner of the group 
-    $user = Get-MgUser -Filter "mail eq '$Instructor'"
-    $userId = $user.Id
-
-
- 
+    $GroupName = $Line.Section; 
  
     #Check if the associated team exists already, create it if not
     if (($CreatedTeams -match $GroupName) -OR ($ExistingTeams -match $GroupName)) { 
@@ -358,18 +331,19 @@ foreach($Line in $List) {
     else {
         write-host "Creating Team" $GroupName "and waiting for 10 seconds";
 
-        $GroupObject = Get-MgGroup -Filter "DisplayName eq '$GroupName'" -ErrorAction SilentlyContinue
-        $GroupId = $groupObject.Id
-        write-host $groupId 
+
+        $GroupId = getGroupId -groupName $GroupName
+
+        write-host "New Team created with name: "$GroupName "and TeamId of" $groupId
+
         $params = @{
 	        "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
             "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
         }
+
         Start-Sleep -Seconds 10;
+
         $newTeam = New-MgTeam  -BodyParameter $params   
-        Write-Host "OUTCOME = $newTeam"
-        #$GroupObject = Get-UnifiedGroup $GroupName -ErrorAction SilentlyContinue
-        #New-Team -GroupID $GroupObject.ExternalDirectoryObjectID -ErrorAction SilentlyContinue | out-null;
         $CreatedTeams += ,$GroupName;
         
         $GroupObject = "";
@@ -384,6 +358,3 @@ write-host "The total number of skipped lines was $($skippedInstructorsCount + $
 write-host "The total number of skipped TBA lines was $skippedInstructorsCount.";
 write-host "The total number of lines skipped due to Course title was $skippedCoursesCount.";
 write-host "If any errors appeared during the script run please either screenshot the entire error message including the lines before and after and provide the screenshot to Dan."  ;
-
-#We created this temporary file, but we don't need it anymore
-Remove-Item -Path $tempFilePath
