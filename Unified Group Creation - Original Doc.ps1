@@ -39,10 +39,9 @@ function getUniqueInstructorId {
     param (
         [string]$nameOfInstructor
     )
-
-    $user = Get-MgUser -Filter "mail eq '$nameOfInstructor'"
-    return $user.Id
-
+        $user = Get-MgUser -Filter "mail eq '$nameOfInstructor'" -errorAction silentlycontinue
+        return $user.Id
+    
 }
 
 #This function just fetches all the groups or teams, depending on if "group" or "team" is entered as a parameter
@@ -82,60 +81,19 @@ function getGroupId {
     return $groupObject.Id
 }
 
-function modifyStudentRecord {
-
-    param(
+function outputLineDataToConsole {
+    param (
+        [string]$instructor,
         [string]$groupName,
-	    [string]$Student,
-        [string]$Action
-    )
-
-    $GroupId = getGroupId -groupName $groupName
-
-    $user = Get-MgUser -Filter "userPrincipalName eq '$Student'"
-    $objectId = $user.Id
-
-    if($Action -eq "create"){
-        #Will need to add proper student as user
-        New-MgGroupMember -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
-    }
-    elseif($Action -eq "remove"){
-        try {
-            #Will need to add proper student as user
-            Remove-MgGroupMemberDirectoryObjectByRef -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction Stop
-
-        }
-
-        catch {
-            if($_.Exception.Message -like "*does not exist or one of its queried reference-property objects are not present*"){
-                if($groupId -eq $null){
-                    Write-host "A student was failed to remove from a group, but the group doesn't exist yet." -Foreground yellow
-                    write-host "    Group ID: "$groupId -foregroundColor Yellow
-                    Write-host "    GroupName: "$GroupName -ForegroundColor yellow
-                    Write-host "    Object ID: "$objectId -ForegroundColor yellow
-                    Write-host "    StudentName: "$Student -ForegroundColor yellow
-                }else{
-                    write-host "Cannot remove student from group because student not found in group." -ForegroundColor yellow
-                    write-host "    Group ID: "$groupId -foregroundColor Yellow
-                    Write-host "    GroupName: "$GroupName -ForegroundColor yellow
-                    Write-host "    Object ID: "$objectId -ForegroundColor yellow
-                    Write-host "    StudentName: "$Student -ForegroundColor yellow
-                }
-            }
-            else {
-                Write-Host "Another Unknown error happened during removal of student." -ForegroundColor Red
-                write-host "    Group ID: "$groupId -foregroundColor Yellow
-                Write-host "    GroupName: "$GroupName -ForegroundColor yellow
-                Write-host "    Object ID: "$objectId -ForegroundColor yellow
-                Write-host "    StudentName: "$Student -ForegroundColor yellow
-            }  
-            
-        }
-    }
-
-
+        [string]$GroupId,
+        [string]$Student,
+        [string]$severity
+    ) 
+    write-host "    Instructor: "$instructor -foregroundcolor $severity  
+    write-host "    Group ID: "$groupId -foregroundColor $severity
+    Write-host "    GroupName: "$GroupName -ForegroundColor $severity
+    Write-host "    StudentName: "$Student -ForegroundColor $severity
 }
-        
 
 #Helps avoid Script Running issues
 Set-ExecutionPolicy RemoteSigned -Scope CurrentUser;   #If this scripeed is resaved on this PC, will run without issue.
@@ -158,10 +116,9 @@ $scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrit
 
 Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
 
-#To get the site ID, you type in the search bar, "siteURL + /_api/
-#So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/
-#press enter to search, and a file should download.  Within the file, search for <d:Id m:type=”Edm.Guid”> 
-#Then, you will find the GUID, which is a long Id number....
+#To get the site ID, you type in the search bar, "siteURL + /_api/web/id
+#Then find the id inside the brackets
+#So for the IT ops site, it would be https://nlc3.sharepoint.com/sites/it-ops-infra/_api/web/id
 #
 $siteId = "098fefe0-1133-449e-82df-24013c732708"
 $driveiD = (Get-MgSiteDrive -SiteId $siteId).Id    #Id of the sharepoint site drive. 
@@ -229,6 +186,8 @@ $GroupObject = "";
 $skippedInstructorsCount = 0;
 $skippedCoursesCount = 0;
 $lastcheckeddate=0;
+$errorList = @();                #This list provides a list of all items that generated a severe error
+
 
 write-host "CSV File:" $CSVFilePath;
 #We created this temporary file, but we don't need it anymore
@@ -239,23 +198,78 @@ Remove-Item -Path $tempFilePath
 [array]$existingGroups = getAllGroupsOrTeams -groupType "group"
 [array]$existingTeams = getAllGroupsOrTeams -groupType "team"
 
+#Stores error outputs to help keep code from cluttering functions.  These can be accessed before running access methods
+#to modify azure resources
+ $errorOutputs = @{}
+
+$errorOutputs["1"] = @{
+
+"Full" = "A teacher has not been assigned as instructor field Labelled as `'TBA`'.  Group could not be created."
+"Short" = "Teacher name = 'TBA'."
+}
+$errorOutputs["2"] = @{
+    "Full" = "Instructor email exists, but is disabled.  Group could not be created."
+    "Short" = "Instructor account is Disabled."
+}
+
+$errorOutputs["3"] = @{
+    "Full" = "Invalid Instructor email address.  Group could not be created."
+    "Short" = "Instructor Email not Found in Azure."
+}
+$errorOutputs["4"] = @{
+    "Full" = "Unknown Error During Account Creation"
+    "Short" = "Unknown Error During Account Creation"
+}
+$errorOutputs["5"] = @{
+    "Full" = "Attempted to add a group member to group, but duplicate groups exist with same name"
+    "Short" = "Duplicate Group(s) Exist"
+}
+$errorOutputs["6"] = @{
+    "Full" = "Attempted to remove a group member from group, but duplicate groups exist with same name"
+    "Short" = "Duplicate Group(s) Exist"
+}
+$errorOutputs["7"] = @{
+    "Full" = "Uknown Error happened during removal of student"
+    "Short" = "Duplicate Group(s) Exist"
+}
 
 
 # --- Let's process the actual CSV file now ---
 foreach ($Line in $List) {
-    
+
     #Some internal declarations based on the specific line we're working on
-    $GroupName = $Line.Section;
-    $Student = $Line.SEmail;
-    $Instructor = $Line.Instructor;
-    $Description = $Line.Description;
-    $Status = $Line.Status;
-    
+    $GroupName = $Line.Section.trim();
+    $Student = $Line.SEmail.trim();
+    $Instructor = $Line.Instructor.trim();
+    $Description = $Line.Description.trim();
+    $Status = $Line.Status.trim();
+        
+
     #Calls Declared functoin to get unique Id for the instructor who will be the owner of the group 
     $userId = getUniqueInstructorId -nameOfInstructor $instructor
 
     #Calls Declared Function to generate a unique name
     $uniqueMailNickname = generateUniqueName -GroupName $GroupName
+
+    #####STORE ERROR CONDITIONS####
+    
+    [array]$errorConditionsCaught = $null
+
+    if($userId -eq $null -and $instructor -eq "TBA") {
+        $errorConditionsCaught += 1;           
+
+    }
+    elseif($userId -eq $null -and $instructor -ne "TBA"){
+        $azAccount = Get-MgUser -Filter "userPrincipalName eq '$instructor'" -Property "displayName,accountEnabled" -ErrorAction SilentlyContinue
+
+        #Catches if the account exists but is disabled...
+        if($azAccount.AccountEnabled -eq $false){
+            $errorConditionsCaught += 2;          
+        }
+        else{
+            $errorConditionsCaught += 3;   
+        }
+    }
 
     #Skip lines without Instructors listed
     if ($Instructor -eq "TBA") {
@@ -267,17 +281,12 @@ foreach ($Line in $List) {
         $skippedCoursesCount++;
     }
    
-    #Remove the student from the group first, in case the group doesn't exist already it won't be created
-    if ($Status -eq "NotInClass") {
-        modifyStudentRecord -groupName $GroupName -Student $Student -Action "remove"
-    }
-
-
-
     #Check if the unified group exists already, create it if not
     if (($CreatedGroups -match $GroupName) -OR ($ExistingGroups -match $GroupName)) { 
-        #write-host $GroupName "Group already exists."; 
         $CreatedGroups += ,$GroupName;
+    }
+ 
+    elseif($errorConditionsCaught.Count -gt 0){#Leave empty
     }
     else {
         write-host "Creating Group" $GroupName "and waiting for 10 seconds";
@@ -294,25 +303,90 @@ foreach ($Line in $List) {
             "resourceBehaviorOptions" = @("WelcomeEmailDisabled") #works
             "visibility" = "Private"
         }  
+        try{
 
-        #Creates the new group using the $NewGroupSettings
-        $group = New-MgGroup -BodyParameter $NewGroupSettings 
-
-        #Gets GroupId from new group just created.
-        $groupId = $group.Id
-        write-host "New Group created with name: "$groupName" and group id "$groupID 
-        $CreatedGroups += ,$GroupName;
+            #Creates the new group using the $NewGroupSettings
+            $group = New-MgGroup -BodyParameter $NewGroupSettings -ErrorAction Stop
+            
+            #Gets GroupId from new group just created.
+            $groupId = $group.Id
+            write-host "New Group created with name: "$groupName" and group id "$groupID 
+            $CreatedGroups += ,$GroupName;
+            
+        }
+        catch{
+                $errorConditionsCaught += 4;  
+        }
 
         #WE CAN TEST TO SEE IF THIS IS NECESSARY
         Start-Sleep -Seconds 10;
     }
 
-    #Add the student from the group as appropriate
-    #It is significantly faster to re-perform this operation than it is to compare whether it needs to be done
-    if ($Status -eq "InClass") {
-        modifyStudentRecord -groupName $GroupName -Student $Student -Action "create"
-        Write-Host "Added $Student to Group: $GroupName"
+
+    $GroupId = getGroupId -groupName $groupName
+
+    if($groupId -ne $null) {
+
+        $studentObject = Get-MgUser -Filter "userPrincipalName eq '$Student'"
+        $ObjectId = $studentObject.Id
+
+
+        #Add the student from the group as appropriate
+        #It is significantly faster to re-perform this operation than it is to compare whether it needs to be done
+        if ($Status -eq "InClass") {
+            try{
+                #Will need to add proper student as user
+                New-MgGroupMember -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction SilentlyContinue;
+            }
+            catch [System.Management.Automation.ParameterBindingException] {
+                $errorConditionsCaught += 5;    
+            }
+        }
+
+        #Remove the student from the group first, in case the group doesn't exist already it won't be created
+        if ($Status -eq "NotInClass") {
+            try {
+                Remove-MgGroupMemberDirectoryObjectByRef -GroupId $groupId -DirectoryObjectId $objectId -ErrorAction Stop
+            }
+            catch [System.Management.Automation.ParameterBindingException] {
+                $errorConditionsCaught += 6;  
+            }
+            catch {
+                if($_.Exception.Message -like "*does not exist or one of its queried reference-property objects are not present*"){
+                    if($groupId -eq $null){
+                        Write-host "A student was failed to remove from a group, but the group doesn't exist yet." -Foreground yellow
+
+                    }else{
+                        write-host "Cannot remove student from group because student not found in group." -ForegroundColor yellow
+                    }
+                
+                    outputLineDataToConsole -groupName $GroupName -GroupId $groupId -Student $student -instructor $instructor -severity "yellow"
+                }
+                else {
+                    $errorConditionsCaught += 7;  
+                }  
+
+            
+            }
+        }
     }
+
+    
+    elseif($errorConditionsCaught.Count -gt 0){
+        for($x = 0; $x -lt $errorConditionsCaught.Count; $x++){
+            try {
+                $key = $errorConditionsCaught[$x].toString()
+                Write-Host  $errorOutputs[$key]["Full"] -ForegroundColor Red
+                outputLineDataToConsole -groupName $GroupName -GroupId $groupId  -Student $Student -instructor $instructor -severity "red"
+                Add-Member -InputObject $Line -MemberType NoteProperty -Name "Error Type" -Value $errorOutputs[$key].Short   
+                $errorList += $Line
+                
+            }
+            #Catches bad hash table values 
+            catch {}
+        }
+    }
+
 }
 
 #This sleep adds additional 20 seconds between running groups actions and teams actions.  This ensures that all group
@@ -321,33 +395,36 @@ Start-Sleep -Seconds 20;
 
 foreach($Line in $List) {
  
-    $GroupName = $Line.Section; 
+        $GroupName = $Line.Section.trim(); 
  
-    #Check if the associated team exists already, create it if not
-    if (($CreatedTeams -match $GroupName) -OR ($ExistingTeams -match $GroupName)) { 
-        #write-host $GroupName "Team already exists.";
-        $CreatedTeams += ,$GroupName;
-    }
-    else {
-        write-host "Creating Team" $GroupName "and waiting for 10 seconds";
-
-
-        $GroupId = getGroupId -groupName $GroupName
-
-        write-host "New Team created with name: "$GroupName "and TeamId of" $groupId
-
-        $params = @{
-	        "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
-            "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
+        #Check if the associated team exists already, create it if not
+        if (($CreatedTeams -match $GroupName) -OR ($ExistingTeams -match $GroupName)) { 
+            #write-host $GroupName "Team already exists.";
+            $CreatedTeams += ,$GroupName;
         }
+        else {
+            write-host "Creating Team" $GroupName "and waiting for 10 seconds";
 
-        Start-Sleep -Seconds 10;
 
-        $newTeam = New-MgTeam  -BodyParameter $params   
-        $CreatedTeams += ,$GroupName;
+            $GroupId = getGroupId -groupName $GroupName
+
+
+
+            $params = @{
+	            "template@odata.bind" = "https://graph.microsoft.com/v1.0/teamsTemplates('standard')"    #Creates Standard Group Template
+                "group@odata.bind" = "https://graph.microsoft.com/v1.0/groups('$GroupId')"               #Uses Existing Unified Group To create linked team.  Includes group ID, Visibility, DisplayName, Description
+            }
+
+            Start-Sleep -Seconds 10;
+
+            $newTeam = New-MgTeam  -BodyParameter $params   
+            write-host "New Team created with name: "$GroupName "and TeamId of" $groupId
+            $CreatedTeams += ,$GroupName;
         
-        $GroupObject = "";
-    }
+            $GroupObject = "";
+        }
+    
+
 
 }
 
@@ -358,3 +435,108 @@ write-host "The total number of skipped lines was $($skippedInstructorsCount + $
 write-host "The total number of skipped TBA lines was $skippedInstructorsCount.";
 write-host "The total number of lines skipped due to Course title was $skippedCoursesCount.";
 write-host "If any errors appeared during the script run please either screenshot the entire error message including the lines before and after and provide the screenshot to Dan."  ;
+
+
+
+
+$errorList
+
+#Gets Class or Section and makes a list
+$errorBoolean =  $errorList | Select-Object -ExpandProperty Section
+
+$sectionChecked = @() #used to check if section was checked already
+
+foreach($Line in $List) {
+
+
+
+    #Checks if group shows up in error List.  If it does, we can't change the name
+    if($errorBoolean.trim() -match $Line.Section.trim()){
+        $sectionChecked += $Line.Section.Trim();
+    }
+    else {
+                #Checks if group has already been checked
+        if($sectionChecked -match $Line.Section.Trim()) {
+
+        } 
+        else {
+            $misMatchFound = $false
+
+            #Checks each line against the instructor.  If a mismatch is found, we won't process.
+            foreach($innerLine in $List) {
+                
+                $misMatchFound = $false
+
+                if($Line.Section.Trim() -eq $innerLine.Section.Trim()){ 
+
+                    if($Line.Instructor.Trim() -eq $innerLine.Instructor.trim()){
+                         write-host "MISMATCH IS NOT TRUE"
+                    }
+                    else {
+                        write-host "MISMATCH FOUND"
+                        write-host "InnerLine: " $innerLine.Section $innerLine.Instructor
+                        write-Host "OuterLine: " $Line.Section $line.Instructor
+                         $misMatchFound = $true
+                        break;
+                    }
+
+                   
+                }
+
+            }
+
+            if($misMatchFound -eq $false){
+                Write-host "CHANGE OWNER OF GROUP"
+                Write-Host $Line.Section
+                #Check if group exists...
+                #Check against value in azure
+
+                if (getGroupId -groupName $Line.Section) {
+                    Write-Host "Group exists. Line 495"
+
+
+                    $groupId = getGroupId -groupName $Line.Section
+
+                    $user = Get-MgUser -Filter "userPrincipalName eq '$($Line.Instructor)'"
+                    $userId = $User.Id
+
+                    #Get owner object from group
+                    $owners = Get-MgGroupOwner -GroupId $groupId
+                    $ownersArray = @()
+
+                    #Puts all owners into an array
+                    foreach($owner in $owners){
+                        $ownerUPN = Get-MgUser -UserId $owner.Id
+                        $ownersArray += $ownerUPN.UserPrincipalName
+
+
+
+                    }
+
+                    if($ownersArray -notmatch $Line.Instructor){
+                        New-MgGroupOwnerByRef -GroupId $groupId -BodyParameter @{ "@odata.id"="https://graph.microsoft.com/v1.0/users/$userId" }
+                
+                        foreach($owner in $ownersArray) {
+                            if($owner -notmatch $Line.Instructor){
+                            
+                                $userToRemove = Get-MgUser -Filter "userPrincipalName eq '$owner'"
+                                $userIdToRemove = $userToRemove.Id
+                                $userIdToRemove
+                                Remove-MgGroupOwnerByRef -GroupId $groupId -DirectoryObjectId $userIdToRemove
+
+                            }
+                        }
+                    }
+                    
+
+                    
+                }
+                
+
+
+            }
+
+            $sectionChecked += $Line.Section.Trim();
+        }
+    }
+}
