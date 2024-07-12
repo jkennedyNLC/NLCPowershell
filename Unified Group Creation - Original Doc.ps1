@@ -34,16 +34,6 @@ function generateUniqueName {
     return $uniqueMailNickname;
 }
 
-function getUniqueInstructorId {
-
-    param (
-        [string]$nameOfInstructor
-    )
-        $user = Get-MgUser -Filter "mail eq '$nameOfInstructor'" -errorAction silentlycontinue
-        return $user.Id
-    
-}
-
 #This function just fetches all the groups or teams, depending on if "group" or "team" is entered as a parameter
 #Looks complicated, but it just writes some output, gets the lists, and sends whichever list required back as an array
 function getAllGroupsOrTeams {
@@ -112,9 +102,13 @@ Import-Module Microsoft.Graph.Sites
 Import-Module Microsoft.Graph.Teams
 Import-Module Microsoft.Graph.Groups
 
-$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All, Sites.Read.All")  #Microsoft 365 Permissions 
+#$scopes = @("User.Read.All", "Files.read.All", "Group.Read.All", "Group.ReadWrite.All", "Team.ReadBasic.All, Sites.Read.All")  #Microsoft 365 Permissions 
 
-Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
+#Connect-MgGraph -Scopes $scopes -NoWelcome      #Connect to Microsoft Graph with the provided permissions
+$clientId = "1b0ec331-c0c3-462e-b95d-34059aecd40e"
+$tenantId = "bc442f33-a447-4f70-8d33-cd08cede5d6c"
+$certificate = "CN=UnifiedGroupCreation"
+Connect-MgGraph -ClientId $clientId -TenantId $tenantId -CertificateName $certificate 
 
 #To get the site ID, you type in the search bar, "siteURL + /_api/web/id
 #Then find the id inside the brackets
@@ -202,36 +196,35 @@ Remove-Item -Path $tempFilePath
 #to modify azure resources
  $errorOutputs = @{}
 
-$errorOutputs["1"] = @{
+        $errorOutputs["1"] = @{
+        "Full" = "A teacher has not been assigned as instructor field Labelled as `'TBA`'.  Group not be created if doesn't already exist."
+        "Short" = "Teacher name = 'TBA'."
+        }
+        $errorOutputs["2"] = @{
+            "Full" = "Instructor email exists, but is disabled.  Group may not be created if doesn't already exist"
+            "Short" = "Instructor account is Disabled."
+        }
 
-"Full" = "A teacher has not been assigned as instructor field Labelled as `'TBA`'.  Group could not be created."
-"Short" = "Teacher name = 'TBA'."
-}
-$errorOutputs["2"] = @{
-    "Full" = "Instructor email exists, but is disabled.  Group could not be created."
-    "Short" = "Instructor account is Disabled."
-}
-
-$errorOutputs["3"] = @{
-    "Full" = "Invalid Instructor email address.  Group could not be created."
-    "Short" = "Instructor Email not Found in Azure."
-}
-$errorOutputs["4"] = @{
-    "Full" = "Unknown Error During Account Creation"
-    "Short" = "Unknown Error During Account Creation"
-}
-$errorOutputs["5"] = @{
-    "Full" = "Attempted to add a group member to group, but duplicate groups exist with same name"
-    "Short" = "Duplicate Group(s) Exist"
-}
-$errorOutputs["6"] = @{
-    "Full" = "Attempted to remove a group member from group, but duplicate groups exist with same name"
-    "Short" = "Duplicate Group(s) Exist"
-}
-$errorOutputs["7"] = @{
-    "Full" = "Uknown Error happened during removal of student"
-    "Short" = "Duplicate Group(s) Exist"
-}
+        $errorOutputs["3"] = @{
+            "Full" = "Invalid Instructor email address.  Group may not be created if doesn't already exist"
+            "Short" = "Instructor Email not Found in Azure."
+        }
+        $errorOutputs["4"] = @{
+            "Full" = "Unknown Error During Account Creation"
+            "Short" = "Unknown Error During Account Creation"
+        }
+        $errorOutputs["5"] = @{
+            "Full" = "Attempted to add a group member to group, but duplicate groups exist with same name"
+            "Short" = "Duplicate Group(s) Exist"
+        }
+        $errorOutputs["6"] = @{
+            "Full" = "Attempted to remove a group member from group, but duplicate groups exist with same name"
+            "Short" = "Duplicate Group(s) Exist"
+        }
+        $errorOutputs["7"] = @{
+            "Full" = "Uknown Error happened during removal of student"
+            "Short" = "Duplicate Group(s) Exist"
+        }
 
 
 # --- Let's process the actual CSV file now ---
@@ -245,8 +238,10 @@ foreach ($Line in $List) {
     $Status = $Line.Status.trim();
         
 
-    #Calls Declared functoin to get unique Id for the instructor who will be the owner of the group 
-    $userId = getUniqueInstructorId -nameOfInstructor $instructor
+    #Gets uunique Id for the instructor who will be the owner of the group 
+    #$userId = getUniqueInstructorId -nameOfInstructor $instructor
+    $azAccount = Get-MgUser -Filter "userPrincipalName eq '$instructor'" -Property "displayName,accountEnabled,id" -ErrorAction SilentlyContinue
+    $userId = $azAccount.Id
 
     #Calls Declared Function to generate a unique name
     $uniqueMailNickname = generateUniqueName -GroupName $GroupName
@@ -255,25 +250,17 @@ foreach ($Line in $List) {
     
     [array]$errorConditionsCaught = $null
 
-    if($userId -eq $null -and $instructor -eq "TBA") {
-        $errorConditionsCaught += 1;           
+    #Checks for each error Condition...
 
+    if($instructor -eq "TBA") {
+        $errorConditionsCaught += 1;
+        $skippedInstructorsCount++;           
     }
-    elseif($userId -eq $null -and $instructor -ne "TBA"){
-        $azAccount = Get-MgUser -Filter "userPrincipalName eq '$instructor'" -Property "displayName,accountEnabled" -ErrorAction SilentlyContinue
-
-        #Catches if the account exists but is disabled...
-        if($azAccount.AccountEnabled -eq $false){
-            $errorConditionsCaught += 2;          
-        }
-        else{
-            $errorConditionsCaught += 3;   
-        }
+    elseif($azAccount.AccountEnabled -eq $false){
+        $errorConditionsCaught += 2;    
     }
-
-    #Skip lines without Instructors listed
-    if ($Instructor -eq "TBA") {
-        $skippedInstructorsCount++;
+    elseif($AzAccount.Id -eq $null){
+        $errorConditionsCaught += 3;
     }
 
     #catch for sections that explicitly do not want teams made
@@ -285,9 +272,8 @@ foreach ($Line in $List) {
     if (($CreatedGroups -match $GroupName) -OR ($ExistingGroups -match $GroupName)) { 
         $CreatedGroups += ,$GroupName;
     }
- 
-    elseif($errorConditionsCaught.Count -gt 0){#Leave empty
-    }
+    elseif($errorConditionsCaught.Count -gt 0){ }#Leave empty.  Just ensures group doesnt get created if errors found for a line
+    elseif($SkippedCourses -match $GroupName){ } #skip adding groups for instructors who dont want them
     else {
         write-host "Creating Group" $GroupName "and waiting for 10 seconds";
         
@@ -315,16 +301,17 @@ foreach ($Line in $List) {
             
         }
         catch{
-                $errorConditionsCaught += 4;  
+                $errorConditionsCaught += 4;  #Unknown group Creation Error
         }
 
-        #WE CAN TEST TO SEE IF THIS IS NECESSARY
+        #Necessary as per documentatin standards for graph.  Avoids issues with group partially created.
         Start-Sleep -Seconds 10;
     }
 
-
+    #Get group Id
     $GroupId = getGroupId -groupName $groupName
 
+    #This large if block Checks if students are in class or not.  Adds or remove from class as needed.
     if($groupId -ne $null) {
 
         $studentObject = Get-MgUser -Filter "userPrincipalName eq '$Student'"
@@ -371,15 +358,24 @@ foreach ($Line in $List) {
         }
     }
 
-    
-    elseif($errorConditionsCaught.Count -gt 0){
+    #This block checks for errors caught for this line.  
+    #Once found, adds error message to line and appends line to errorList.  Also outputs any errors.  
+    if($errorConditionsCaught.Count -gt 0){
         for($x = 0; $x -lt $errorConditionsCaught.Count; $x++){
             try {
                 $key = $errorConditionsCaught[$x].toString()
                 Write-Host  $errorOutputs[$key]["Full"] -ForegroundColor Red
                 outputLineDataToConsole -groupName $GroupName -GroupId $groupId  -Student $Student -instructor $instructor -severity "red"
                 Add-Member -InputObject $Line -MemberType NoteProperty -Name "Error Type" -Value $errorOutputs[$key].Short   
-                $errorList += $Line
+                #$errorList += $Line
+                $errorList += [PSCustomobject]@{ 
+                    REG_CODE = $Line.Section; 
+                    STUDENT = $Line.SEmail; 
+                    STATUS = $Line.Status;
+                    FACULTY_EMAIL = $Line.Instructor;
+                    DESCRIPTION = $Line.Description;
+                    ERROR_TYPE = $errorOutputs[$key].Short
+                }
                 
             }
             #Catches bad hash table values 
@@ -393,6 +389,7 @@ foreach ($Line in $List) {
 #actions are completed, avoiding Teams still provisioning e
 Start-Sleep -Seconds 20;
 
+#Uses Azure Id and creates a Teams group that is connected by same Id.
 foreach($Line in $List) {
  
         $GroupName = $Line.Section.trim(); 
@@ -430,113 +427,169 @@ foreach($Line in $List) {
 
 
 
-write-host "The script has completed.";
-write-host "The total number of skipped lines was $($skippedInstructorsCount + $skippedCoursesCount).";
-write-host "The total number of skipped TBA lines was $skippedInstructorsCount.";
-write-host "The total number of lines skipped due to Course title was $skippedCoursesCount.";
-write-host "If any errors appeared during the script run please either screenshot the entire error message including the lines before and after and provide the screenshot to Dan."  ;
-
-
-
-
-$errorList
-
 #Gets Class or Section and makes a list
-$errorBoolean =  $errorList | Select-Object -ExpandProperty Section
+$errorBoolean =  $errorList | Select-Object -ExpandProperty REG_CODE
 
 $sectionChecked = @() #used to check if section was checked already
 
+
+#This loop checks to update instructors as needed each time it runs.
 foreach($Line in $List) {
 
-
-
     #Checks if group shows up in error List.  If it does, we can't change the name
-    if($errorBoolean.trim() -match $Line.Section.trim()){
+    if($errorBoolean.Count -eq 0 ) {  
+        
+    }
+    elseif($errorBoolean.trim() -match $Line.Section.trim()){
         $sectionChecked += $Line.Section.Trim();
     }
-    else {
-                #Checks if group has already been checked
-        if($sectionChecked -match $Line.Section.Trim()) {
 
-        } 
-        else {
+    if($sectionChecked -notmatch $Line.Section.Trim()) {
+
+
+        $misMatchFound = $false
+
+        #Checks each line against the instructor.  If a mismatch is found, we won't process.
+        foreach($innerLine in $List) {
+                
             $misMatchFound = $false
 
-            #Checks each line against the instructor.  If a mismatch is found, we won't process.
-            foreach($innerLine in $List) {
-                
-                $misMatchFound = $false
+            if($Line.Section.Trim() -eq $innerLine.Section.Trim()){ 
 
-                if($Line.Section.Trim() -eq $innerLine.Section.Trim()){ 
-
-                    if($Line.Instructor.Trim() -eq $innerLine.Instructor.trim()){
-                         write-host "MISMATCH IS NOT TRUE"
-                    }
-                    else {
-                        write-host "MISMATCH FOUND"
-                        write-host "InnerLine: " $innerLine.Section $innerLine.Instructor
-                        write-Host "OuterLine: " $Line.Section $line.Instructor
-                         $misMatchFound = $true
-                        break;
-                    }
+                if($Line.Instructor.Trim() -eq $innerLine.Instructor.trim()){ }
+                else {
+                    $misMatchFound = $true
+                    break;
+                }
 
                    
-                }
-
             }
 
-            if($misMatchFound -eq $false){
-                Write-host "CHANGE OWNER OF GROUP"
-                Write-Host $Line.Section
-                #Check if group exists...
-                #Check against value in azure
+        }
 
-                if (getGroupId -groupName $Line.Section) {
-                    Write-Host "Group exists. Line 495"
+        if($misMatchFound -eq $false){
+            #Check if group exists...
+            #Check against value in azure
 
+            if (getGroupId -groupName $Line.Section) {
 
-                    $groupId = getGroupId -groupName $Line.Section
+                $groupId = getGroupId -groupName $Line.Section
 
-                    $user = Get-MgUser -Filter "userPrincipalName eq '$($Line.Instructor)'"
-                    $userId = $User.Id
+                $user = Get-MgUser -Filter "userPrincipalName eq '$($Line.Instructor)'"
+                $userId = $User.Id
 
-                    #Get owner object from group
-                    $owners = Get-MgGroupOwner -GroupId $groupId
-                    $ownersArray = @()
+                #Get owner object from group
+                $owners = Get-MgGroupOwner -GroupId $groupId
+                $ownersArray = @()
 
-                    #Puts all owners into an array
-                    foreach($owner in $owners){
-                        $ownerUPN = Get-MgUser -UserId $owner.Id
-                        $ownersArray += $ownerUPN.UserPrincipalName
+                #Puts all owners into an array
+                foreach($owner in $owners){
+                    $ownerUPN = Get-MgUser -UserId $owner.Id
+                    $ownersArray += $ownerUPN.UserPrincipalName
 
 
 
-                    }
+                }
 
-                    if($ownersArray -notmatch $Line.Instructor){
-                        New-MgGroupOwnerByRef -GroupId $groupId -BodyParameter @{ "@odata.id"="https://graph.microsoft.com/v1.0/users/$userId" }
+                if($ownersArray -notmatch $Line.Instructor){
+                    New-MgGroupOwnerByRef -GroupId $groupId -BodyParameter @{ "@odata.id"="https://graph.microsoft.com/v1.0/users/$userId" }
                 
-                        foreach($owner in $ownersArray) {
-                            if($owner -notmatch $Line.Instructor){
+                    foreach($owner in $ownersArray) {
+                        if($owner -notmatch $Line.Instructor){
                             
-                                $userToRemove = Get-MgUser -Filter "userPrincipalName eq '$owner'"
-                                $userIdToRemove = $userToRemove.Id
-                                $userIdToRemove
-                                Remove-MgGroupOwnerByRef -GroupId $groupId -DirectoryObjectId $userIdToRemove
+                            $userToRemove = Get-MgUser -Filter "userPrincipalName eq '$owner'"
+                            $userIdToRemove = $userToRemove.Id
+                            $userIdToRemove
+                            Remove-MgGroupOwnerByRef -GroupId $groupId -DirectoryObjectId $userIdToRemove
 
-                            }
                         }
                     }
+                }
                     
 
                     
-                }
+            }
                 
 
 
-            }
-
-            $sectionChecked += $Line.Section.Trim();
         }
+
+        $sectionChecked += $Line.Section.Trim();
     }
+    
 }
+
+
+#This section of code posts $errorList as a file to Sharepoint NLC-IT group in the SysNet channel
+
+$clientSecret = "Lcx8Q~pc57tsuSkCNVHTZ3ts0QIxd-Cvy_WdaaGE"
+
+$uploadUrl = "https://graph.microsoft.com/v1.0/drives/b!REHuhXSHE0qdMyoYk2uweExyI9NhT0hEt8wIPrJSeiG_uT-ZPzvtRIxnR_Ei__C8/root:/SysNet/RecentErrors.csv:/content"
+
+$tokenBody = @{
+    grant_type    = "client_credentials"
+    scope         = "https://graph.microsoft.com/.default"
+    client_id     = $clientId
+    client_secret = $clientSecret
+}
+$tokenResponse = Invoke-RestMethod -Uri "https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token" -Method Post -ContentType "application/x-www-form-urlencoded" -Body $tokenBody
+$accessToken = $tokenResponse.access_token
+
+
+$fileContent = $errorList | ConvertTo-Csv -NoTypeInformation | ForEach-Object { $_ + "`r`n" }
+
+if($fileContent -ne $null) {
+    $response = Invoke-RestMethod -Uri $uploadUrl -Method Put -Headers @{
+        Authorization = "Bearer $accessToken"
+        "Content-Type" = "text/csv"  # Adjust content type as per your file type
+    } -Body ([System.Text.Encoding]::UTF8.GetBytes($fileContent))
+}
+else {
+    Write-Host "No Severe Errors were found.  No Log was saved to Sharepoint."
+}
+
+
+
+
+
+
+###End of Script.  Outputs Run-info.  WE NEED TO UPDATE VARIABLES PROPERLY TO ENSURE THIIS IS OUTPUTTING PROPERLY
+write-host "The script has completed.";
+#write-host "The total number of skipped lines was $($skippedInstructorsCount + $skippedCoursesCount).";
+#write-host "The total number of skipped TBA lines was $skippedInstructorsCount.";
+#write-host "The total number of lines skipped due to Course title was $skippedCoursesCount.";
+
+
+
+#THIS IS HOW WE WOULD SEND TO TEAMS AS LINK.  HOWEVER REQUIRES USER CONTEXT SO NOT INCLUDING
+<#
+$teamId = "a040855a-e5d8-4299-9817-81ead7703f4d"
+$channelId = "19:38055a331a3548ebbbf57b3dc25c508b@thread.skype"
+$fileName = "RecentErrors.csv"
+
+$fileId = $response.id
+$fileUrl = $response.webUrl
+
+$filePath = "/SysNet/RecentErrors.csv"
+$driveItemUrl = "https://graph.microsoft.com/v1.0/sites/$siteId/drives/$driveId/root:$filePath"
+
+$webURL = $response.webUrl
+
+$params = @{
+	body = @{
+		contentType = "html"
+		content = "Definitely not a phishing attempt. <a href='$webUrL'>Test Name</a>"
+	}
+} #>
+
+#################THESE CAN BE USED TO GENERATE NEW CERTS AND GET THUMBPRINT####
+#BEWARE THE CERTT CREATION AND UPLOAD PORTAL IS A BIT SLOW 
+
+#$cert = New-SelfSignedCertificate -Subject "CN=UnifiedGroupCreation" -CertStoreLocation `
+#  "Cert:\CurrentUser\My" -KeyExportPolicy Exportable -KeySpec Signature -KeyLength 2048 `
+#  -KeyAlgorithm RSA -HashAlgorithm SHA256
+#Export-Certificate -Cert $cert -FilePath "C:/temp/PowerShellAppOnly.cer"
+#$thumbprint = $cert.Thumbprint
+
+ #Display or use the thumbprint
+#Write-Output "Certificate Thumbprint: $thumbprint"
